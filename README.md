@@ -1,2 +1,2 @@
 # smbcluster
-PS script To automate WS2012r2 Clustering
+PS script To automate Windows Server 2012R2 Clustering
