@@ -50,12 +50,19 @@ if (Get-PSSnapin -registered | ?{$_.Name -eq "XenServerPSSnapIn"}){
             Start-Sleep 5
         }
 
+        
+
+    }catch [XenAPI.Failure]{
+          "Caught the bugger!!!"
 
 
     }finally{
-        #Disconnect from server
-        Write-Host "$($MyInvocation.MyCommand): Disconnecting from XenServer Host: $XenServerHost"
-        Disconnect-XenServer -Session $session
+
+        #Disconnect from server if there is an active connection
+        if($session){
+            Write-Host "$($MyInvocation.MyCommand): Disconnecting from XenServer Host: $XenServerHost"
+            Disconnect-XenServer -Session $session
+        }
 
         #Remove XenServerPSSnapin
         Write-Host "$($MyInvocation.MyCommand): Removing XenServerPSSnapIn PowerShell Snap-in"
