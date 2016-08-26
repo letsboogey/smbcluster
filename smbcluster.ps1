@@ -21,57 +21,87 @@ Param(
     [Parameter(mandatory=$true)] [string]$XenServerHost,
     [Parameter(mandatory=$true)] [string]$UserName,
     [Parameter(mandatory=$true)] [string]$Password,
-    #[Parameter(mandatory=$true)] [int]$NumNodes,
-    [Parameter(mandatory=$true)] [string[]]$Nodes
+    [Parameter(mandatory=$true)] [int]$NumNodes
+
 )
 
-if (Get-PSSnapin -registered | ?{$_.Name -eq "XenServerPSSnapIn"}){
-    
-    #Load the XenServer PSSnapIn
-    if ((Get-PSSnapin -Name XenServerPSSnapIn -ErrorAction SilentlyContinue) -eq $null){
-        Write-Host "$($MyInvocation.MyCommand): Adding XenServerPSSnapIn PowerShell Snap-in"
-        Add-PSSnapin XenServerPSSnapIn
-    }
-    
-    try{
-        #Connect to the server
-        Write-Host "$($MyInvocation.MyCommand): Connecting to XenServer Host: $XenServerHost"
-        $session = Connect-XenServer -Server $XenServerHost -UserName $UserName -Password $Password `
-                   -NoWarnCertificates -SetDefaultSession -PassThru
-        
-        #TESTING :: Rename VMs
-        $NodeNum = 1
-        foreach ($Node in $Nodes){
-            $VM = Get-XenVM -Name $Node
-            $NewName = "WS2012r2_Node_"+$NodeNum
-            Set-XenVm -VM $VM -NameLabel $NewName
-            $NodeNum++
-            Write-Host "$($MyInvocation.MyCommand): Name change completed"
-            Start-Sleep 5
+#loads the XenServer Powershell SnapIn
+function loadPSSnapin(){
+     Write-Host "$($MyInvocation.MyCommand): Verifying XenServer PowerShell SnapIn..."
+     #check if snapin is installed and registered
+     if (Get-PSSnapin -registered | ?{$_.Name -eq "XenServerPSSnapIn"}){
+        #load the snapin if it is not loaded
+        if ((Get-PSSnapin -Name XenServerPSSnapIn -ErrorAction SilentlyContinue) -eq $null){
+            Write-Host "$($MyInvocation.MyCommand): Loading XenServer PowerShell SnapIn..."
+            Add-PSSnapin XenServerPSSnapIn
         }
-
-        
-
-    }catch [XenAPI.Failure]{
-          "Caught the bugger!!!"
-
-
-    }finally{
-
-        #Disconnect from server if there is an active connection
-        if($session){
-            Write-Host "$($MyInvocation.MyCommand): Disconnecting from XenServer Host: $XenServerHost"
-            Disconnect-XenServer -Session $session
-        }
-
-        #Remove XenServerPSSnapin
-        Write-Host "$($MyInvocation.MyCommand): Removing XenServerPSSnapIn PowerShell Snap-in"
-        Remove-PSSnapin XenServerPSSnapIn
-    }
-
-}else {
-    throw "XenServerPSSnapIn not found."
+     }else {
+        Write-Host "$($MyInvocation.MyCommand): XenServerPSSnapIn not found, please install and register the snapin" `
+                                                "Script exiting..."
+        exit
+     }
 }
+
+#
+#BEGIN SCRIPT
+#
+loadPSSnapin
+
+try{
+    #Connect to the server
+    Write-Host "$($MyInvocation.MyCommand): Connecting to XenServer Host: $XenServerHost"
+    $session = Connect-XenServer -Server $XenServerHost -UserName $UserName -Password $Password `
+                -NoWarnCertificates -SetDefaultSession -PassThru
+
+    Write-Host "$($MyInvocation.MyCommand): Building $NumNodes cluster nodes"
+    #create desired number of VMs(cluster nodes) based on WS2012r2 template
+    $template = Get-XenVM | where{$_.name_label -eq "Windows Server 2012 R2"}
+    Write-host "pass 1"
+    for($i=1 ; $i -le $NumNodes ;$i++){
+        $VMname = "WS12R2_node_"+ $i
+        $SRname = $VMname+"_SR"
+        write-host "pass 2"
+        Invoke-XenVM -VM $template -XenAction Clone -NewName $VMname -Async `
+                     -PassThru | Wait-XenTask -ShowProgress
+        write-host "pass 3"
+        $VM = Get-XenVM -Name $VMname
+        $SR = Get-XenSR -Name $SRname
+        write-host "pass 4"
+        $other_config = $VM.other_config
+        write-host "pass 5"
+        $other_config["disks"] = $other_config["disks"].Replace('sr=""', 'sr="{0}"' -f $SR.uuid)
+        write-host "pass 6"
+        Set-XenVM -VM $VM -OtherConfig $other_config
+        write-host "pass 7"
+  
+      #provision vm 
+      Invoke-XenVM -VM $VM -XenAction Provision -Async -PassThru | Wait-XenTask -ShowProgress 
+      write-host "pass 8"
+
+    }
+        
+
+        
+
+}catch{
+        "Caught the bugger!!!"
+
+
+}finally{
+
+    #Disconnect from server if there is an active connection
+    if($session){
+        Write-Host "$($MyInvocation.MyCommand): Disconnecting from XenServer Host: $XenServerHost"
+        Disconnect-XenServer -Session $session
+    }
+
+    #Remove XenServerPSSnapin
+    Write-Host "$($MyInvocation.MyCommand): Removing XenServer PowerShell SnapIn and exiting script"
+    Remove-PSSnapin XenServerPSSnapIn
+    exit
+}
+
+
 
 
 
