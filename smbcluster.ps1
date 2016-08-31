@@ -18,10 +18,10 @@
 #>
 
 Param(
-    [Parameter(mandatory=$true)] [string]$XenServerHost,
-    [Parameter(mandatory=$true)] [string]$UserName,
-    [Parameter(mandatory=$true)] [string]$Password,
-    [Parameter(mandatory=$true)] [int]$NumNodes
+    [string]$XenServerHost = '10.71.71.150',
+    [string]$UserName= '',
+    [string]$Password = '',
+    [int]$NumNodes = 3 
 
 )
 
@@ -34,6 +34,7 @@ function loadPSSnapin(){
         if ((Get-PSSnapin -Name XenServerPSSnapIn -ErrorAction SilentlyContinue) -eq $null){
             Write-Host "$($MyInvocation.MyCommand): Loading XenServer PowerShell SnapIn..."
             Add-PSSnapin XenServerPSSnapIn
+             Write-Host "$($MyInvocation.MyCommand): XenServer PowerShell SnapIn successfully added"
         }
      }else {
         Write-Host "$($MyInvocation.MyCommand): XenServerPSSnapIn not found, please install and register the snapin" `
@@ -47,6 +48,8 @@ function loadPSSnapin(){
 #
 loadPSSnapin
 
+
+
 try{
     #Connect to the server
     Write-Host "$($MyInvocation.MyCommand): Connecting to XenServer Host: $XenServerHost"
@@ -55,17 +58,23 @@ try{
 
     Write-Host "$($MyInvocation.MyCommand): Building $NumNodes cluster nodes"
     #create desired number of VMs(cluster nodes) based on WS2012r2 template
-    $template = Get-XenVM | where{$_.name_label -eq "Windows Server 2012 R2"}
+    $template = Get-XenVM -Name "Windows Server 2012 R2 (64-bit)" | where{$_.is_a_template }
+
+    #access XenRT Windows ISOs
+    $isolib = Get-XenSR | Where-Object{($_.type -eq 'iso') -and ($_.name_label -eq 'XenRT Windows ISOs')}
+
+    #get a specific windows distro iso
+    $distro = foreach($iso in $isolib.VDIs){ Get-XenVDI -Ref $iso.opaque_ref| Where-Object{$_.name_label -eq 'ws12r2u1-x64.iso'}}
     Write-host "pass 1"
     for($i=1 ; $i -le $NumNodes ;$i++){
         $VMname = "WS12R2_node_"+ $i
-        $SRname = $VMname+"_SR"
+        # $SRname = "node"+$i+"_vdi"
         write-host "pass 2"
         Invoke-XenVM -VM $template -XenAction Clone -NewName $VMname -Async `
                      -PassThru | Wait-XenTask -ShowProgress
         write-host "pass 3"
-        $VM = Get-XenVM -Name $VMname
-        $SR = Get-XenSR -Name $SRname
+        $VM = Get-XenVM | where{$_.name_label -eq $VMname}
+        $SR = Get-XenSR | where{$_.name_label -eq "Local storage"}
         write-host "pass 4"
         $other_config = $VM.other_config
         write-host "pass 5"
@@ -73,20 +82,35 @@ try{
         write-host "pass 6"
         Set-XenVM -VM $VM -OtherConfig $other_config
         write-host "pass 7"
-  
-      #provision vm 
-      Invoke-XenVM -VM $VM -XenAction Provision -Async -PassThru | Wait-XenTask -ShowProgress 
-      write-host "pass 8"
+        
 
+        Set-XenVM -VM $VM -OtherConfig $other_config
+  
+        #provision vm 
+        Invoke-XenVM -VM $VM -XenAction Provision -Async -PassThru | Wait-XenTask -ShowProgress  
+        write-host "pass 8"
+
+        #create dvd drive
+        New-XenVBD -VM $VM -UserDevice 3 -Bootable $false -Mode RO `
+             -Type CD -Unpluggable $true -Empty $true
+        
+       
+        write-host "pass 9"
+        #grab the dvd drive and mount the iso
+        foreach($dev in $VM.VBDs ){Get-XenVBD -Ref $dev.opaque_ref | Where-Object{$_.type -eq 'CD'} | Invoke-XenVBD -XenAction Insert $distro.uuid}
+        write-host "pass 10"
+        
+
+             
+        
     }
         
 
         
 
 }catch{
-        "Caught the bugger!!!"
-
-
+        Write-Host "BUGGER!"
+        Write-Host $_.Exception.Message
 }finally{
 
     #Disconnect from server if there is an active connection
