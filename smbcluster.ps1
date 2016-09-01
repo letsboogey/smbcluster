@@ -19,14 +19,15 @@
 
 Param(
     [string]$XenServerHost = '10.71.71.150',
-    [string]$UserName= '',
-    [string]$Password = '',
+    [string]$UserName= 'root',
+    [string]$Password = 'xenroot',
     [int]$NumNodes = 3 
-
 )
+#
+#XenServer Powershell SnapIn functions
+#
 
-#loads the XenServer Powershell SnapIn
-function loadPSSnapin(){
+function add_XS_PSSnapin(){
      Write-Host "$($MyInvocation.MyCommand): Verifying XenServer PowerShell SnapIn..."
      #check if snapin is installed and registered
      if (Get-PSSnapin -registered | ?{$_.Name -eq "XenServerPSSnapIn"}){
@@ -34,7 +35,7 @@ function loadPSSnapin(){
         if ((Get-PSSnapin -Name XenServerPSSnapIn -ErrorAction SilentlyContinue) -eq $null){
             Write-Host "$($MyInvocation.MyCommand): Loading XenServer PowerShell SnapIn..."
             Add-PSSnapin XenServerPSSnapIn
-             Write-Host "$($MyInvocation.MyCommand): XenServer PowerShell SnapIn successfully added"
+            Write-Host "$($MyInvocation.MyCommand): XenServer PowerShell SnapIn successfully added"
         }
      }else {
         Write-Host "$($MyInvocation.MyCommand): XenServerPSSnapIn not found, please install and register the snapin" `
@@ -43,18 +44,51 @@ function loadPSSnapin(){
      }
 }
 
+function remove_XS_PSSnapin(){
+    Write-Host "$($MyInvocation.MyCommand): Removing XenServer PowerShell SnapIn and exiting script"
+    Remove-PSSnapin XenServerPSSnapIn
+    exit
+}
+
+#
+#server connection functions
+#
+
+function connect_server([string]$svr, [string]$usr, [string]$pass){
+    Write-Host "$($MyInvocation.MyCommand): Connecting to XenServer Host: $svr"
+    $session = Connect-XenServer -Server $svr `
+                                 -UserName $usr `
+                                 -Password $pass `
+                                 -NoWarnCertificates -SetDefaultSession -PassThru
+    if($session){
+        return $true
+    }
+    return $false
+    
+}
+
+function disconnect_server([string]$svr){
+    Write-Host "$($MyInvocation.MyCommand): Disconnecting from XenServer Host: $svr"
+    Get-XenSession -Server $svr | Disconnect-XenServer 
+
+    if((Get-XenSession -Server $svr) -eq $null){
+        Write-Host "$($MyInvocation.MyCommand): Server disconnected"
+        return $true
+    }
+    return $false
+    
+}
+
 #
 #BEGIN SCRIPT
 #
-loadPSSnapin
+add_XS_PSSnapin
 
 
 
 try{
     #Connect to the server
-    Write-Host "$($MyInvocation.MyCommand): Connecting to XenServer Host: $XenServerHost"
-    $session = Connect-XenServer -Server $XenServerHost -UserName $UserName -Password $Password `
-                -NoWarnCertificates -SetDefaultSession -PassThru
+    connect_server -svr $XenServerHost -usr $UserName -pass $Password
 
     Write-Host "$($MyInvocation.MyCommand): Building $NumNodes cluster nodes"
     #create desired number of VMs(cluster nodes) based on WS2012r2 template
@@ -92,7 +126,9 @@ try{
   
         #provision vm 
         Invoke-XenVM -VM $VM -XenAction Provision -Async -PassThru | Wait-XenTask -ShowProgress   
-        
+
+        #boot vm and install windows server
+        Invoke-XenVM -VM $VM -XenAction Start -Async -PassThru        
                  
     }
         
@@ -104,16 +140,8 @@ try{
         Write-Host $_.Exception.Message
 }finally{
 
-    #Disconnect from server if there is an active connection
-    if($session){
-        Write-Host "$($MyInvocation.MyCommand): Disconnecting from XenServer Host: $XenServerHost"
-        Disconnect-XenServer -Session $session
-    }
-
-    #Remove XenServerPSSnapin
-    Write-Host "$($MyInvocation.MyCommand): Removing XenServer PowerShell SnapIn and exiting script"
-    Remove-PSSnapin XenServerPSSnapIn
-    exit
+    disconnect_server -svr $XenServerHost
+    remove_XS_PSSnapin
 }
 
 
