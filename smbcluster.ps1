@@ -61,10 +61,10 @@ try{
     $template = Get-XenVM -Name "Windows Server 2012 R2 (64-bit)" | where{$_.is_a_template }
 
     #access XenRT Windows ISOs
-    $isolib = Get-XenSR | Where-Object{($_.type -eq 'iso') -and ($_.name_label -eq 'XenRT Windows ISOs')}
+    $isolib = Get-XenSR | Where-Object{($_.name_label -eq 'XenRT Windows ISOs')}
 
-    #get a specific windows distro iso
-    $distro = foreach($iso in $isolib.VDIs){ Get-XenVDI -Ref $iso.opaque_ref| Where-Object{$_.name_label -eq 'ws12r2u1-x64.iso'}}
+    #get a specific windows iso
+    $distro = $isolib.VDIs | Get-XenVDI | Where-Object{$_.name_label -eq 'ws12r2u1-x64.iso'}
     Write-host "pass 1"
     for($i=1 ; $i -le $NumNodes ;$i++){
         $VMname = "WS12R2_node_"+ $i
@@ -79,30 +79,21 @@ try{
         $other_config = $VM.other_config
         write-host "pass 5"
         $other_config["disks"] = $other_config["disks"].Replace('sr=""', 'sr="{0}"' -f $SR.uuid)
+      
         write-host "pass 6"
-        Set-XenVM -VM $VM -OtherConfig $other_config
-        write-host "pass 7"
-        
 
+        #add cd drive and mount the windows iso
+        New-XenVBD -VM $VM -VDI $distro -Userdevice 1 -Bootable $true -Mode RO `
+             -Type CD -Unpluggable $true -Empty $false -OtherConfig @{} `
+             -QosAlgorithmType "" -QosAlgorithmParams @{}
+        
+        write-host "pass 8"
         Set-XenVM -VM $VM -OtherConfig $other_config
   
         #provision vm 
-        Invoke-XenVM -VM $VM -XenAction Provision -Async -PassThru | Wait-XenTask -ShowProgress  
-        write-host "pass 8"
-
-        #create dvd drive
-        New-XenVBD -VM $VM -UserDevice 3 -Bootable $false -Mode RO `
-             -Type CD -Unpluggable $true -Empty $true
+        Invoke-XenVM -VM $VM -XenAction Provision -Async -PassThru | Wait-XenTask -ShowProgress   
         
-       
-        write-host "pass 9"
-        #grab the dvd drive and mount the iso
-        foreach($dev in $VM.VBDs ){Get-XenVBD -Ref $dev.opaque_ref | Where-Object{$_.type -eq 'CD'} | Invoke-XenVBD -XenAction Insert $distro.uuid}
-        write-host "pass 10"
-        
-
-             
-        
+                 
     }
         
 
