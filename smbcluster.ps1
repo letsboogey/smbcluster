@@ -19,10 +19,11 @@
 
 Param(
     [string]$XenServerHost = '10.71.71.150',
-    [string]$UserName= 'root',
-    [string]$Password = 'xenroot',
+    [string]$UserName= '',
+    [string]$Password = '',
     [int]$NumNodes = 3 
 )
+
 #
 #XenServer Powershell SnapIn functions
 #
@@ -35,8 +36,10 @@ function add_XS_PSSnapin(){
         if ((Get-PSSnapin -Name XenServerPSSnapIn -ErrorAction SilentlyContinue) -eq $null){
             Write-Host "$($MyInvocation.MyCommand): Loading XenServer PowerShell SnapIn..."
             Add-PSSnapin XenServerPSSnapIn
-            Write-Host "$($MyInvocation.MyCommand): XenServer PowerShell SnapIn successfully added"
         }
+
+        Write-Host "$($MyInvocation.MyCommand): XenServer PowerShell SnapIn successfully added"
+
      }else {
         Write-Host "$($MyInvocation.MyCommand): XenServerPSSnapIn not found, please install and register the snapin" `
                                                 "Script exiting..."
@@ -61,10 +64,10 @@ function connect_server([string]$svr, [string]$usr, [string]$pass){
                                  -Password $pass `
                                  -NoWarnCertificates -SetDefaultSession -PassThru
     if($session){
+        Write-Host "$($MyInvocation.MyCommand): Server connected"
         return $true
     }
-    return $false
-    
+    return $false 
 }
 
 function disconnect_server([string]$svr){
@@ -73,65 +76,89 @@ function disconnect_server([string]$svr){
 
     if((Get-XenSession -Server $svr) -eq $null){
         Write-Host "$($MyInvocation.MyCommand): Server disconnected"
-        return $true
+        return $false
     }
-    return $false
-    
+    return $true    
 }
 
 #
-#BEGIN SCRIPT
+#VM functions
 #
-add_XS_PSSnapin
 
-
-
-try{
-    #Connect to the server
-    connect_server -svr $XenServerHost -usr $UserName -pass $Password
-
-    Write-Host "$($MyInvocation.MyCommand): Building $NumNodes cluster nodes"
-    #create desired number of VMs(cluster nodes) based on WS2012r2 template
-    $template = Get-XenVM -Name "Windows Server 2012 R2 (64-bit)" | where{$_.is_a_template }
-
-    #access XenRT Windows ISOs
-    $isolib = Get-XenSR | Where-Object{($_.name_label -eq 'XenRT Windows ISOs')}
-
-    #get a specific windows iso
-    $distro = $isolib.VDIs | Get-XenVDI | Where-Object{$_.name_label -eq 'ws12r2u1-x64.iso'}
-    Write-host "pass 1"
+function create_VMs(){
     for($i=1 ; $i -le $NumNodes ;$i++){
-        $VMname = "WS12R2_node_"+ $i
-        # $SRname = "node"+$i+"_vdi"
-        write-host "pass 2"
-        Invoke-XenVM -VM $template -XenAction Clone -NewName $VMname -Async `
-                     -PassThru | Wait-XenTask -ShowProgress
-        write-host "pass 3"
-        $VM = Get-XenVM | where{$_.name_label -eq $VMname}
-        $SR = Get-XenSR | where{$_.name_label -eq "Local storage"}
-        write-host "pass 4"
-        $other_config = $VM.other_config
-        write-host "pass 5"
-        $other_config["disks"] = $other_config["disks"].Replace('sr=""', 'sr="{0}"' -f $SR.uuid)
-      
-        write-host "pass 6"
+        $vm_name = "WS12R2_node_"+ $i
+        Invoke-XenVM -VM $template `
+                     -XenAction Clone `
+                     -NewName $VMname `
+                     -Async -PassThru | Wait-XenTask -ShowProgress
+        
+        $vm = Get-XenVM | where{$_.name_label -eq $vm_name}
+        $sr = Get-XenSR | where{$_.name_label -eq "Local storage"}
+        
+        $other_config = $vm.other_config
+        
+        $other_config["disks"] = $other_config["disks"].Replace('sr=""', 'sr="{0}"' -f $sr.uuid)
 
         #add cd drive and mount the windows iso
-        New-XenVBD -VM $VM -VDI $distro -Userdevice 1 -Bootable $true -Mode RO `
-             -Type CD -Unpluggable $true -Empty $false -OtherConfig @{} `
-             -QosAlgorithmType "" -QosAlgorithmParams @{}
+        New-XenVBD -VM $VM `
+                   -VDI $winiso `
+                   -Userdevice 1 `
+                   -Bootable $true `
+                   -Mode RO `
+                   -Type CD `
+                   -Unpluggable $true 
+                   -Empty $false `
+                   -OtherConfig @{} `
+                   -QosAlgorithmType "" `
+                   -QosAlgorithmParams @{}
         
-        write-host "pass 8"
         Set-XenVM -VM $VM -OtherConfig $other_config
   
         #provision vm 
         Invoke-XenVM -VM $VM -XenAction Provision -Async -PassThru | Wait-XenTask -ShowProgress   
 
         #boot vm and install windows server
-        Invoke-XenVM -VM $VM -XenAction Start -Async -PassThru        
-                 
+        Invoke-XenVM -VM $VM -XenAction Start -Async -PassThru                   
     }
-        
+       
+}
+
+function delete_VMs(){
+    
+}
+
+#
+#BEGIN SCRIPT
+#
+
+#load snapin
+add_XS_PSSnapin
+
+
+try{
+    #Connect to the server
+    $connection = connect_server -svr $XenServerHost -usr $UserName -pass $Password
+
+    #Use WS2012r2 template for VM's
+    $template = Get-XenVM -Name "Windows Server 2012 R2 (64-bit)" | where{$_.is_a_template }
+
+    #access XenRT Windows ISO SR
+    $isolib = Get-XenSR | Where-Object{($_.name_label -eq 'XenRT Windows ISOs')}
+
+    #get a specific windows iso
+    $winiso = $isolib.VDIs | Get-XenVDI | Where-Object{$_.name_label -eq 'ws12r2u1-x64.iso'}
+    Write-Host "$($MyInvocation.MyCommand): Server disconnected"
+
+}catch{
+    Write-Host $_.Exception.Message
+} 
+
+
+
+try{
+    create_VMs
+     
 
         
 
@@ -140,7 +167,7 @@ try{
         Write-Host $_.Exception.Message
 }finally{
 
-    disconnect_server -svr $XenServerHost
+    $connection = disconnect_server -svr $XenServerHost
     remove_XS_PSSnapin
 }
 
