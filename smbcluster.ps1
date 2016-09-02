@@ -9,8 +9,8 @@
     .PARAMETER XenServerHost
         The XenServer host to connect to
 
-    .PARAMETER Nodes
-        The VM nodes used to form the cluster
+    .PARAMETER NumNodes
+        The number of VMs used to form the cluster
 
     .NOTES
         Copyright (c) Citrix Systems, Inc. All rights reserved.
@@ -90,7 +90,7 @@ function create_VMs(){
         $vm_name = "WS12R2_node_"+ $i
         Invoke-XenVM -VM $template `
                      -XenAction Clone `
-                     -NewName $VMname `
+                     -NewName $vm_name `
                      -Async -PassThru | Wait-XenTask -ShowProgress
         
         $vm = Get-XenVM | where{$_.name_label -eq $vm_name}
@@ -101,31 +101,57 @@ function create_VMs(){
         $other_config["disks"] = $other_config["disks"].Replace('sr=""', 'sr="{0}"' -f $sr.uuid)
 
         #add cd drive and mount the windows iso
-        New-XenVBD -VM $VM `
+        New-XenVBD -VM $vm `
                    -VDI $winiso `
                    -Userdevice 1 `
                    -Bootable $true `
                    -Mode RO `
                    -Type CD `
-                   -Unpluggable $true 
+                   -Unpluggable $true `
                    -Empty $false `
                    -OtherConfig @{} `
                    -QosAlgorithmType "" `
                    -QosAlgorithmParams @{}
         
-        Set-XenVM -VM $VM -OtherConfig $other_config
+        Set-XenVM -VM $vm -OtherConfig $other_config
   
         #provision vm 
-        Invoke-XenVM -VM $VM -XenAction Provision -Async -PassThru | Wait-XenTask -ShowProgress   
+        Invoke-XenVM -VM $vm -XenAction Provision -Async -PassThru | Wait-XenTask -ShowProgress   
 
         #boot vm and install windows server
-        Invoke-XenVM -VM $VM -XenAction Start -Async -PassThru                   
+        Write-Host "$($MyInvocation.MyCommand): Starting VM: $vm_name"
+        Invoke-XenVM -VM $vm -XenAction Start -Async -PassThru                   
     }
        
 }
 
+function destroy_vm([XenAPI.VM]$vm){
+    if ($vm -eq $null){
+        return
+    }
+
+    $vdis = @()
+    foreach($vbd in $vm.VBDs){
+        if((Get-XenVBDProperty -Ref $vbd -XenProperty Mode) -eq [XenAPI.vbd_mode]::RW){
+            $vdis += Get-XenVBDProperty -Ref $vbd -XenProperty VDI
+        }
+    }
+  
+    Remove-XenVM -VM $vm -Async -PassThru | Wait-XenTask -ShowProgress
+    ForEach($vdi in $vdis){
+        Remove-XenVDI -VDI $vdi -Async -PassThru | Wait-XenTask -ShowProgress
+    }
+}
+
 function delete_VMs(){
-    
+    $vms = Get-XenVM | where{$_.name_label.StartsWith("WS12R2_")}#need to find more robust way of filtering vm since name could be changed by user
+    if($vms){
+        ForEach($vm in $vms){
+            Invoke-XenVM -VM $vm -XenAction Shutdown -Async -Passthru | Wait-XenTask -ShowProgress
+            destroy_vm($vm)
+        }
+    }
+    return 
 }
 
 #
@@ -144,11 +170,11 @@ try{
     $template = Get-XenVM -Name "Windows Server 2012 R2 (64-bit)" | where{$_.is_a_template }
 
     #access XenRT Windows ISO SR
+    Write-Host "$($MyInvocation.MyCommand): Getting windows iso from XenRT Windows ISOs"
     $isolib = Get-XenSR | Where-Object{($_.name_label -eq 'XenRT Windows ISOs')}
 
     #get a specific windows iso
-    $winiso = $isolib.VDIs | Get-XenVDI | Where-Object{$_.name_label -eq 'ws12r2u1-x64.iso'}
-    Write-Host "$($MyInvocation.MyCommand): Server disconnected"
+    $winiso = $isolib.VDIs | Get-XenVDI | Where-Object{$_.name_label -eq 'ws12r2-x64.iso'}
 
 }catch{
     Write-Host $_.Exception.Message
@@ -157,11 +183,8 @@ try{
 
 
 try{
+    delete_VMs
     create_VMs
-     
-
-        
-
 }catch{
         Write-Host "BUGGER!"
         Write-Host $_.Exception.Message
