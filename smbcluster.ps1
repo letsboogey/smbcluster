@@ -19,8 +19,8 @@
 
 Param(
     [string]$XenServerHost = '10.71.71.150',
-    [string]$UserName= '',
-    [string]$Password = '',
+    [string]$UserName= 'poop',
+    [string]$Password = 'pooppoop',
     [int]$NumNodes = 3 
 )
 
@@ -86,11 +86,23 @@ function disconnect_server([string]$svr){
 #
 
 function create_VMs(){
+
+    #Use WS2012r2 template for VM's
+    $template = Get-XenVM -Name "Windows Server 2012 R2 (64-bit)" | where{$_.is_a_template }
+
+    #access XenRT Windows ISO SR
+    Write-Host "$($MyInvocation.MyCommand): Getting windows iso from XenRT Windows ISOs SR"
+    $isolib = Get-XenSR | Where-Object{($_.name_label -eq 'XenRT Windows ISOs')}
+
+    #get a specific windows iso
+    $winiso = $isolib.VDIs | Get-XenVDI | Where-Object{$_.name_label -eq 'ws12r2-x64.iso'}
+
+    #add Ms to network 0 on host
+    $network = Get-XenNetwork | where{$_.name_label.Contains("eth0")}
+
     for($i=1 ; $i -le $NumNodes ;$i++){
-        $vm_name = "WS12R2_node_"+ $i
-        Invoke-XenVM -VM $template `
-                     -XenAction Clone `
-                     -NewName $vm_name `
+        $vm_name = "ws12r2_node"+ $i
+        Invoke-XenVM -VM $template -XenAction Clone -NewName $vm_name `
                      -Async -PassThru | Wait-XenTask -ShowProgress
         
         $vm = Get-XenVM | where{$_.name_label -eq $vm_name}
@@ -99,19 +111,16 @@ function create_VMs(){
         $other_config = $vm.other_config
         
         $other_config["disks"] = $other_config["disks"].Replace('sr=""', 'sr="{0}"' -f $sr.uuid)
+        $other_config["is_cluster_node"] = "true"
 
         #add cd drive and mount the windows iso
-        New-XenVBD -VM $vm `
-                   -VDI $winiso `
-                   -Userdevice 1 `
-                   -Bootable $true `
-                   -Mode RO `
-                   -Type CD `
-                   -Unpluggable $true `
-                   -Empty $false `
-                   -OtherConfig @{} `
-                   -QosAlgorithmType "" `
-                   -QosAlgorithmParams @{}
+        New-XenVBD -VM $vm -VDI $winiso -Userdevice 1 -Bootable $true -Mode RO `
+                   -Type CD -Unpluggable $true -Empty $false -OtherConfig @{} `
+                   -QosAlgorithmType "" -QosAlgorithmParams @{}
+
+        Add-XenNetwork -Network $network 
+        New-XenVIF -Network $network -Device 0 -VM $vm 
+        
         
         Set-XenVM -VM $vm -OtherConfig $other_config
   
@@ -124,6 +133,18 @@ function create_VMs(){
     }
        
 }
+
+#function create_smb_sr([String]$sr_svr, [String]$sr_path, [String]$sr_name){
+#
+#try{
+#      $sr_opq = New-XenSR -XenHost 10.71.128.31 -DeviceConfig @{ "server"=$sr_svr; "serverpath"=$sr_path; "options"=""} `
+#                  -PhysicalSize 1024000000 -NameLabel $sr_name -NameDescription "testing smb create" -Type "smb" -ContentType "" `
+#                  -Shared $true -SmConfig @{} -Async -PassThru `
+#        | Wait-XenTask -ShowProgress 
+#        }catch{
+#                Write-host $_.Exception.Message
+#        }
+#}
 
 function destroy_vm([XenAPI.VM]$vm){
     if ($vm -eq $null){
@@ -144,10 +165,11 @@ function destroy_vm([XenAPI.VM]$vm){
 }
 
 function delete_VMs(){
-    $vms = Get-XenVM | where{$_.name_label.StartsWith("WS12R2_")}#need to find more robust way of filtering vm since name could be changed by user
+    $vms = Get-XenVM | where{$_.domid -gt 0}
     if($vms){
         ForEach($vm in $vms){
-            Invoke-XenVM -VM $vm -XenAction Shutdown -Async -Passthru | Wait-XenTask -ShowProgress
+            #shutdown and destroy VM and associated VDIs     
+            Invoke-XenVM -VM $vm -XenAction HardShutdown -Async -Passthru | Wait-XenTask -ShowProgress
             destroy_vm($vm)
         }
     }
@@ -158,33 +180,22 @@ function delete_VMs(){
 #BEGIN SCRIPT
 #
 
-#load snapin
-add_XS_PSSnapin
 
 
 try{
-    #Connect to the server
+
+    #load snapin
+    add_XS_PSSnapin
+
+    #establish connection
     $connection = connect_server -svr $XenServerHost -usr $UserName -pass $Password
-
-    #Use WS2012r2 template for VM's
-    $template = Get-XenVM -Name "Windows Server 2012 R2 (64-bit)" | where{$_.is_a_template }
-
-    #access XenRT Windows ISO SR
-    Write-Host "$($MyInvocation.MyCommand): Getting windows iso from XenRT Windows ISOs"
-    $isolib = Get-XenSR | Where-Object{($_.name_label -eq 'XenRT Windows ISOs')}
-
-    #get a specific windows iso
-    $winiso = $isolib.VDIs | Get-XenVDI | Where-Object{$_.name_label -eq 'ws12r2-x64.iso'}
-
-}catch{
-    Write-Host $_.Exception.Message
-} 
-
-
-
-try{
+    
+    #remove any existing VMs
     delete_VMs
+
+    #create new VMs
     create_VMs
+
 }catch{
         Write-Host "BUGGER!"
         Write-Host $_.Exception.Message
