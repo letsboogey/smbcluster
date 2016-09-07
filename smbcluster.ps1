@@ -115,10 +115,10 @@ function create_VMs(){
 
         #add cd drive and mount the windows iso
         New-XenVBD -VM $vm -VDI $winiso -Userdevice 1 -Bootable $true -Mode RO `
-                   -Type CD -Unpluggable $true -Empty $false -OtherConfig @{} `
+                   -Type CD -Unpluggable $true -OtherConfig @{} `
                    -QosAlgorithmType "" -QosAlgorithmParams @{}
-
-        Add-XenNetwork -Network $network 
+        
+        #networking
         New-XenVIF -Network $network -Device 0 -VM $vm 
         
         
@@ -129,22 +129,10 @@ function create_VMs(){
 
         #boot vm and install windows server
         Write-Host "$($MyInvocation.MyCommand): Starting VM: $vm_name"
-        Invoke-XenVM -VM $vm -XenAction Start -Async -PassThru                   
+        Invoke-XenVM -VM $vm -XenAction Start -Async -PassThru | Wait-XenTask -ShowProgress                  
     }
        
 }
-
-#function create_smb_sr([String]$sr_svr, [String]$sr_path, [String]$sr_name){
-#
-#try{
-#      $sr_opq = New-XenSR -XenHost 10.71.128.31 -DeviceConfig @{ "server"=$sr_svr; "serverpath"=$sr_path; "options"=""} `
-#                  -PhysicalSize 1024000000 -NameLabel $sr_name -NameDescription "testing smb create" -Type "smb" -ContentType "" `
-#                  -Shared $true -SmConfig @{} -Async -PassThru `
-#        | Wait-XenTask -ShowProgress 
-#        }catch{
-#                Write-host $_.Exception.Message
-#        }
-#}
 
 function destroy_vm([XenAPI.VM]$vm){
     if ($vm -eq $null){
@@ -165,7 +153,7 @@ function destroy_vm([XenAPI.VM]$vm){
 }
 
 function delete_VMs(){
-    $vms = Get-XenVM | where{$_.domid -gt 0}
+    $vms = Get-XenVM | where{($_.domid -gt 0) -and ($_.name_label.Contains("node"))}
     if($vms){
         ForEach($vm in $vms){
             #shutdown and destroy VM and associated VDIs     
@@ -175,6 +163,46 @@ function delete_VMs(){
     }
     return 
 }
+
+#function create_smb_sr([String]$sr_svr, [String]$sr_path, [String]$sr_name){
+#
+#try{
+#      $sr_opq = New-XenSR -XenHost 10.71.128.31 -DeviceConfig @{ "server"=$sr_svr; "serverpath"=$sr_path; "options"=""} `
+#                  -PhysicalSize 1024000000 -NameLabel $sr_name -NameDescription "testing smb create" -Type "smb" -ContentType "" `
+#                  -Shared $true -SmConfig @{} -Async -PassThru `
+#        | Wait-XenTask -ShowProgress 
+#        }catch{
+#                Write-host $_.Exception.Message
+#        }
+#}
+
+
+#function to delay script during OS installation
+function wait_for_OS_install(){
+    $instln_time = 2200;
+    $status = "Installing Windows on VM's..."
+    for($i =0 ; $i -lt $instln_time ; $i++){
+        $ts = [timespan]::FromSeconds($instln_time--)
+        $ts_string = "{0:HH:mm:ss}" -f ([datetime]$ts.Ticks)
+        Write-Progress -Activity "Time remaining $ts_string" -Status $status `
+                       -PercentComplete ($i/$instln_time*100)
+        Start-Sleep -Seconds 1
+    }
+} 
+
+function install_XStools(){
+    $vms = Get-XenVM | where{($_.domid -gt 0) -and ($_.name_label.Contains("node"))}
+    foreach($vm in $vms){
+        $disk_drive = $vm.VBDs |Get-XenVBD | where{$_.type -eq 'CD'}
+        #make sure the drive is empty
+        Invoke-XenVBD -VBD $disk_drive -XenAction Eject
+
+        #insert xenserver tools iso
+        $xstools_iso = Get-XenVDI | Where-Object{$_.name_label -eq 'guest-tools.iso'}
+    }
+}
+
+
 
 #
 #BEGIN SCRIPT
@@ -195,6 +223,12 @@ try{
 
     #create new VMs
     create_VMs
+
+    #wait for os installation to finish
+    wait_for_OS_install
+
+    #install XenServer tools on VMs
+
 
 }catch{
         Write-Host "BUGGER!"
